@@ -1,0 +1,5 @@
+flask>=3.0
+gunicorn>=21.2
+psycopg2-binary>=2.9
+supabase>=2.6
+PyJWT>=2.8 
