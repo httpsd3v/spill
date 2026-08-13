@@ -288,18 +288,27 @@ def parse_ts(v):
     except Exception:
         return datetime.utcnow()
 
-
 def current_jwt():
     h = request.headers.get("Authorization", "")
     if not h.startswith("Bearer "):
         return None
+    token = h[7:]
+    # Method 1: fast local check
     try:
-        payload = jwt.decode(h[7:], JWT_SECRET, algorithms=["HS256"], audience="authenticated")
-    except Exception:
-        return None
-    if payload.get("role") != "authenticated" or not payload.get("sub"):
-        return None
-    return payload
+        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256", "ES256", "RS256"],
+                             options={"verify_aud": False})
+        if payload.get("sub"):
+            return payload
+    except Exception as e:
+        print("[Spill] local JWT check failed:", e)
+    # Method 2: ask Supabase Auth directly (always authoritative)
+    try:
+        res = sb_admin.auth.get_user(token)
+        if res and res.user:
+            return {"sub": res.user.id, "email": res.user.email or "", "role": "authenticated"}
+    except Exception as e:
+        print("[Spill] GoTrue check failed:", e)
+    return None
 
 
 def auth_required(fn):
