@@ -242,12 +242,44 @@ function renderHome(){
   mountComposer($("#composer-slot"),{placeholder:"What's happening?"});
   resetFeed(state.feed.mode);
 }
+  
 function resetFeed(mode){
-  state.feed={mode,cursor:null,done:false,seen:new Set()};
+  state.feed={mode,cursor:null,done:false,seen:new Set(),gen:(state.feed.gen||0)+1};
   $("#feed").innerHTML=feedSkeleton();
   document.querySelectorAll(".tab[data-action='feed-tab']").forEach(t=>t.classList.toggle("on",t.dataset.mode===mode));
   loadFeed();
 }
+async function loadFeed(){
+  const f=state.feed;if(f.done)return;
+  const gen=f.gen;
+  try{
+    const q=f.mode==="foryou"
+      ?`/api/feed?mode=foryou${f.cursor?"&cursor="+encodeURIComponent(f.cursor):""}`
+      :`/api/feed?mode=${f.mode}${f.cursor?"&before="+f.cursor:""}`;
+    const {posts,next}=await api(q);
+    if(gen!==state.feed.gen)return; // user switched tabs while loading — ignore stale result
+    if(!f.cursor)$("#feed").innerHTML="";
+    const fresh=posts.filter(p=>!f.seen.has(p.id));
+    fresh.forEach(p=>f.seen.add(p.id));
+    if(!f.cursor&&!fresh.length){
+      const msgs={following:emptyState("user","You aren't following anyone yet",'Explore Spill and follow people to fill this feed.','<a class="btn btn-primary" href="#/explore">Explore</a>'),
+        latest:emptyState("spark","Nothing here yet","Be the first to post something."),
+        foryou:emptyState("spark","Your For You feed is quiet","Post something or follow people to get started.")};
+      $("#feed").innerHTML=msgs[f.mode]||msgs.latest;
+      f.done=true;
+      return;
+    }
+    $("#feed").insertAdjacentHTML("beforeend",fresh.map(p=>postCard(p)).join(""));
+    if(fresh.length&&!next){
+      $("#feed").insertAdjacentHTML("beforeend",`<div class="caught-up">✓<b>You're all caught up</b><span>New posts will appear as people spill.</span></div>`);
+    }
+    f.cursor=next;f.done=!next;
+    watchSentinel();
+  }catch(e){
+    if(gen===state.feed.gen)$("#feed").innerHTML=emptyState("warn","Couldn't load the feed",esc(e.message),'<button class="btn btn-primary" data-action="retry-feed">Retry</button>');
+  }
+}
+  
 async function loadFeed(){
   const f=state.feed;if(f.done)return;
   try{
