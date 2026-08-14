@@ -1060,7 +1060,7 @@ def follow_requests():
         """SELECT u.id, u.username, u.display_name, u.avatar_url
            FROM follows f JOIN users u ON u.id = f.follower_id
            WHERE f.following_id=%s AND f.status='pending'
-           ORDER BY f.created_at DESC LIMIT 30""", (uid and g.uid,),).fetchall()
+           ORDER BY f.created_at DESC LIMIT 30""", (g.uid,)).fetchall()
     return jsonify({"requests": [dict(r) for r in rows]})
 
 
