@@ -923,10 +923,20 @@ $("#auth-form").addEventListener("submit",async e=>{
         username:(f.get("username")||"").trim(),
         display_name:(f.get("display_name")||"").trim()}});
       state.me=(await api("/api/me")).user;enterApp();
-    }else{
+        }else{
       const {error}=await SB.auth.signInWithPassword({email,password});
       if(error)throw new Error(error.message==="Invalid login credentials"?"Wrong email or password.":error.message);
-      state.me=(await api("/api/me")).user;enterApp();
+      let user;
+      try{user=(await api("/api/me")).user;}
+      catch(e){
+        // auth account exists but profile is missing → create it now
+        const base=((email.split("@")[0]||"").replace(/[^A-Za-z0-9_]/g,"").slice(0,12))||"spiller";
+        for(const uname of [base, base+"_"+Math.floor(10+Math.random()*90)]){
+          try{await api("/api/bootstrap",{method:"POST",body:{username:uname,display_name:base}});break;}catch(e2){}
+        }
+        user=(await api("/api/me")).user;
+      }
+      state.me=user;enterApp();
     }
   }catch(err){errBox.textContent=err.message;}
 });
