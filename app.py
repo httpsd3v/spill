@@ -6,12 +6,13 @@ Photos: Supabase Storage · Live updates: Supabase Realtime (frontend)
 Env vars: SUPABASE_URL, SUPABASE_DB_URL, SUPABASE_SERVICE_KEY, SUPABASE_JWT_SECRET
 Also create a PUBLIC storage bucket named: spill-photos
 
-Run:  python app.py   →  http://localhost:5000
+Run locally:  python app.py   →  http://localhost:5000
 """
 
 import os
 import re
 import uuid
+import hashlib
 from collections import Counter, OrderedDict
 from datetime import datetime, timezone
 from functools import wraps
@@ -194,8 +195,6 @@ CREATE INDEX IF NOT EXISTS idx_notifications_recipient ON notifications(recipien
 CREATE INDEX IF NOT EXISTS idx_messages_convo ON messages(conversation_id, id);
 CREATE INDEX IF NOT EXISTS idx_post_media_post ON post_media(post_id);
 
--- ---- Row Level Security: browsers can NEVER write; they can only read
--- ---- their own realtime rows (used by Supabase Realtime to scope events).
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE posts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE post_media ENABLE ROW LEVEL SECURITY;
@@ -287,6 +286,7 @@ def parse_ts(v):
         return datetime.strptime(v, "%Y-%m-%d %H:%M:%S")
     except Exception:
         return datetime.utcnow()
+
 
 def current_jwt():
     h = request.headers.get("Authorization", "")
@@ -538,7 +538,6 @@ USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{3,20}$")
 @app.post("/api/bootstrap")
 @auth_required
 def bootstrap():
-    """Create the Spill profile for a freshly signed-up Supabase user (idempotent)."""
     db = get_db()
     uid = g.uid
     u = db.execute("SELECT * FROM users WHERE id=%s", (uid,)).fetchone()
@@ -601,6 +600,7 @@ def update_profile():
 def feed():
     mode = request.args.get("mode", "foryou")
     before = request.args.get("before", type=int)
+    cursor = request.args.get("cursor", "")
     uid = g.uid
     db = get_db()
     where, params = "", ()
@@ -612,20 +612,24 @@ def feed():
         params += (uid, uid)
     limit = 20
     if mode == "foryou":
-        rows = query_posts(db, uid, where, params, limit=80)
-        now = datetime.utcnow()
-
-        def score(r):
-            eng = r["like_count"] + 2 * r["comment_count"] + 2 * r["repost_count"]
-            age_h = max((now - parse_ts(r["created_at"])).total_seconds() / 3600.0, 0)
-            return eng * 3.0 - age_h * 1.5
-
-        rows = sorted(rows, key=score, reverse=True)[:limit]
-        rows.sort(key=lambda r: r["id"], reverse=True)
+        # Per-user daily shuffled order → random, no duplicates, ends with "caught up"
+        seed = f"{uid}:{datetime.utcnow().date().isoformat()}"
+        cur_sql, cur_params = "", ()
+        if cursor:
+            cur_sql = " AND md5(CAST(p.id AS text) || %s) > %s"
+            cur_params = (seed, cursor)
+        rows = db.execute(
+            CORE + " WHERE p.deleted_at IS NULL" + CAN_SEE + cur_sql +
+            " ORDER BY md5(CAST(p.id AS text) || %s) LIMIT %s",
+            (uid,) * 7 + cur_params + (seed, limit),
+        ).fetchall()
     else:
         rows = query_posts(db, uid, where, params, limit=limit)
     posts = hydrate(rows, db, uid)
-    nxt = min((p["id"] for p in posts), default=None) if len(posts) == limit else None
+    if mode == "foryou":
+        nxt = hashlib.md5((str(posts[-1]["id"]) + seed).encode()).hexdigest() if len(posts) == limit else None
+    else:
+        nxt = min((p["id"] for p in posts), default=None) if len(posts) == limit else None
     return jsonify({"posts": posts, "next": nxt})
 
 
@@ -1046,6 +1050,56 @@ def notifications():
     db.execute("UPDATE notifications SET is_read = TRUE WHERE recipient_id=%s", (uid,))
     db.commit()
     return jsonify({"groups": out})
+
+
+@app.get("/api/follow-requests")
+@token_required
+def follow_requests():
+    db = get_db()
+    rows = db.execute(
+        """SELECT u.id, u.username, u.display_name, u.avatar_url
+           FROM follows f JOIN users u ON u.id = f.follower_id
+           WHERE f.following_id=%s AND f.status='pending'
+           ORDER BY f.created_at DESC LIMIT 30""", (uid and g.uid,),).fetchall()
+    return jsonify({"requests": [dict(r) for r in rows]})
+
+
+@app.post("/api/follow-requests/<username>/accept")
+@token_required
+def accept_request(username):
+    db = get_db()
+    u = db.execute("SELECT id FROM users WHERE username=%s", (username,)).fetchone()
+    if not u:
+        return err("User not found.", 404)
+    db.execute("UPDATE follows SET status='accepted' WHERE follower_id=%s AND following_id=%s AND status='pending'",
+               (u["id"], g.uid))
+    notify(db, u["id"], g.uid, "request_accepted")
+    db.commit()
+    return jsonify({"ok": True})
+
+
+@app.post("/api/follow-requests/<username>/deny")
+@token_required
+def deny_request(username):
+    db = get_db()
+    u = db.execute("SELECT id FROM users WHERE username=%s", (username,)).fetchone()
+    if not u:
+        return err("User not found.", 404)
+    db.execute("DELETE FROM follows WHERE follower_id=%s AND following_id=%s AND status='pending'",
+               (u["id"], g.uid))
+    db.commit()
+    return jsonify({"ok": True})
+
+
+@app.get("/api/notifications/latest")
+@token_required
+def latest_notification():
+    db = get_db()
+    r = db.execute(
+        """SELECT n.type, n.post_id, n.created_at, u.display_name, u.username
+           FROM notifications n JOIN users u ON u.id = n.actor_id
+           WHERE n.recipient_id=%s ORDER BY n.id DESC LIMIT 1""", (g.uid,)).fetchone()
+    return jsonify({"notification": dict(r) if r else None})
 
 
 @app.get("/api/badges")
