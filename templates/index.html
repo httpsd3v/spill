@@ -76,10 +76,10 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 "use strict";
-/* ========================= SUPABASE CONFIG — EDIT THESE ========================= */
+/* ========================= SUPABASE CONFIG ========================= */
 const SUPABASE_URL      = "https://oihlfwwaackhoxqtjodp.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9paGxmd3dhYWNraG94cXRqb2RwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY2MTgxNDQsImV4cCI6MjEwMjE5NDE0NH0.LxdWR2L2-INFg2XGnH9iJ1hiUylgYXbf1jDvLXUhS-E";
-/* ================================================================================ */
+const SUPABASE_ANON_KEY = "PASTE_YOUR_ANON_PUBLIC_KEY_HERE";
+/* =================================================================== */
 const SB = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const MAX_LEN = 500, MAX_PHOTOS = 4;
@@ -251,7 +251,9 @@ function resetFeed(mode){
 async function loadFeed(){
   const f=state.feed;if(f.done)return;
   try{
-    const q=`/api/feed?mode=${f.mode}${f.cursor?"&before="+f.cursor:""}`;
+    const q=f.mode==="foryou"
+      ?`/api/feed?mode=foryou${f.cursor?"&cursor="+encodeURIComponent(f.cursor):""}`
+      :`/api/feed?mode=${f.mode}${f.cursor?"&before="+f.cursor:""}`;
     const {posts,next}=await api(q);
     if(!f.cursor)$("#feed").innerHTML="";
     const fresh=posts.filter(p=>!f.seen.has(p.id));
@@ -263,6 +265,9 @@ async function loadFeed(){
       $("#feed").innerHTML=msgs[f.mode]||msgs.latest;
     }
     $("#feed").insertAdjacentHTML("beforeend",fresh.map(p=>postCard(p)).join(""));
+    if(posts.length&&!next){
+      $("#feed").insertAdjacentHTML("beforeend",`<div class="caught-up">✓<b>You're all caught up</b><span>New posts will appear as people spill.</span></div>`);
+    }
     f.cursor=next;f.done=!next;
     watchSentinel();
   }catch(e){$("#feed").innerHTML=emptyState("warn","Couldn't load the feed",esc(e.message),'<button class="btn btn-primary" data-action="retry-feed">Retry</button>');}
@@ -454,12 +459,19 @@ async function renderExplore(q=""){
 async function renderNotifications(){
   $("#main").innerHTML=`<header class="main-head"><h2>Notifications</h2></header><div id="notifs">${feedSkeleton()}</div>`;
   try{
-    const {groups}=await api("/api/notifications");
+    const [{groups},{requests}]=await Promise.all([api("/api/notifications"),api("/api/follow-requests")]);
     const verb={like:"liked your post",comment:"commented on your post",reply:"replied to your comment",
       repost:"reposted your post",quote:"quoted your post",follow:"followed you",
-      follow_request:"requested to follow you",mention:"mentioned you"};
-    const iconOf={like:"heart",comment:"comment",reply:"comment",repost:"repeat",quote:"repeat",follow:"user",follow_request:"user",mention:"spark"};
-    $("#notifs").innerHTML=groups.length?groups.map(gr=>{
+      follow_request:"requested to follow you",mention:"mentioned you",request_accepted:"accepted your follow request"};
+    const iconOf={like:"heart",comment:"comment",reply:"comment",repost:"repeat",quote:"repeat",follow:"user",follow_request:"user",mention:"spark",request_accepted:"user"};
+    const reqHTML=requests.length?`<div class="panel flat req-panel"><h3>Follow requests</h3>`+requests.map(r=>`
+      <div class="req-card">
+        <span data-action="profile" data-user="${esc(r.username)}">${avatarHTML(r.avatar_url,r.display_name)}</span>
+        <div class="uc-info" data-action="profile" data-user="${esc(r.username)}"><b>${esc(r.display_name)}</b><span>@${esc(r.username)}</span></div>
+        <button class="btn btn-primary btn-sm" data-action="follow-accept" data-user="${esc(r.username)}">Accept</button>
+        <button class="btn btn-outline btn-sm" data-action="follow-deny" data-user="${esc(r.username)}">Deny</button>
+      </div>`).join("")+`</div>`:"";
+    $("#notifs").innerHTML=reqHTML+(groups.length?groups.map(gr=>{
       const names=gr.actors.map(a=>esc(a.display_name));
       const who=names.slice(0,2).join(", ")+(gr.count>2?` and ${gr.count-2} other${gr.count-2>1?"s":""}`:"");
       return`<div class="notif ${gr.post_id?"clickable":""}" ${gr.post_id?`data-action="open-post" data-id="${gr.post_id}"`:""}>
@@ -468,7 +480,7 @@ async function renderNotifications(){
         <div class="n-body"><p><b>${who}</b> ${verb[gr.type]||"interacted with you"}
           ${gr.snippet?`<span class="n-snip">“${esc(gr.snippet)}”</span>`:""}</p>
           <span class="time">${timeAgo(gr.created_at)}</span></div></div>`;
-    }).join(""):emptyState("bell","Nothing yet","Likes, comments, follows and mentions will show up here.");
+    }).join(""):(requests.length?"":emptyState("bell","Nothing yet","Likes, comments, follows and mentions will show up here.")));
     updateBadges();
   }catch(e){$("#notifs").innerHTML=emptyState("warn","Couldn't load notifications",esc(e.message));}
 }
@@ -623,6 +635,28 @@ function openNewDmModal(){
   setTimeout(()=>input.focus(),50);
 }
 
+/* ============================== push notifications + sound ============================== */
+let audioCtx=null;
+function playPing(){
+  try{
+    audioCtx=audioCtx||new (window.AudioContext||window.webkitAudioContext)();
+    if(audioCtx.state==="suspended")audioCtx.resume();
+    const t=audioCtx.currentTime,o=audioCtx.createOscillator(),g=audioCtx.createGain();
+    o.type="sine";o.frequency.setValueAtTime(880,t);o.frequency.exponentialRampToValueAtTime(1318,t+0.12);
+    g.gain.setValueAtTime(0.0001,t);g.gain.exponentialRampToValueAtTime(0.25,t+0.02);g.gain.exponentialRampToValueAtTime(0.0001,t+0.45);
+    o.connect(g);g.connect(audioCtx.destination);o.start(t);o.stop(t+0.5);
+  }catch(e){}
+}
+function pushOS(title,body){
+  if(localStorage.getItem("spill-notify")!=="1")return;
+  if(!("Notification" in window)||Notification.permission!=="granted")return;
+  playPing();
+  try{new Notification("💧 "+title,{body:body||""});}catch(e){}
+}
+const VERB={like:"liked your post",comment:"commented on your post",reply:"replied to your comment",
+  repost:"reposted your post",quote:"quoted your post",follow:"followed you",
+  follow_request:"requested to follow you",mention:"mentioned you",request_accepted:"accepted your follow request"};
+
 /* ============================== settings ============================== */
 function renderSettings(){
   const u=me_();
@@ -645,6 +679,11 @@ function renderSettings(){
         <label class="check"><input type="checkbox" name="is_private" ${u.is_private?"checked":""}> <span>Private account <small>— only approved followers see your posts</small></span></label>
         <button class="btn btn-primary" type="submit">Save changes</button>
       </form></section>
+    <section class="panel flat"><h3>Push notifications</h3>
+      <div class="set-row"><span>Alerts + sound for likes, comments &amp; DMs</span>
+        <button class="btn btn-outline" id="notify-btn">Enable</button></div>
+      <div class="set-row"><span>Hear a test ping</span>
+        <button class="btn btn-outline" id="notify-test">Test sound</button></div></section>
     <section class="panel flat"><h3>Account</h3>
       <div class="set-row"><span>${esc(u.email||"@"+u.username)}</span></div>
       <div class="form-row" style="padding:0 16px"><label>New password<input id="new-pass" type="password" minlength="6" placeholder="Leave blank to keep current"></label></div>
@@ -664,6 +703,17 @@ function renderSettings(){
   let avatarUrl=u.avatar_url,coverUrl=u.cover_url;
   uploadFor("#av-btn",p=>{avatarUrl=p;$(".sa-prev").innerHTML=avatarHTML(p,"");});
   uploadFor("#cv-btn",p=>{coverUrl=p;$(".sa-cover").style.backgroundImage=`url(${p})`;});
+  const nb=$("#notify-btn");
+  const setNb=()=>{nb.textContent=localStorage.getItem("spill-notify")==="1"?"Disable":"Enable";};
+  setNb();
+  nb.onclick=async()=>{
+    if(localStorage.getItem("spill-notify")==="1"){localStorage.setItem("spill-notify","0");setNb();toast("Push notifications off");return;}
+    if(!("Notification" in window)){toast("This browser doesn't support notifications","err");return;}
+    const perm=await Notification.requestPermission();
+    if(perm==="granted"){localStorage.setItem("spill-notify","1");setNb();toast("Push notifications on 🔔");playPing();}
+    else toast("Permission was blocked by the browser","err");
+  };
+  $("#notify-test").onclick=()=>{playPing();pushOS("Spill test","This is how alerts look & sound 🔔");};
   $("#profile-form").onsubmit=async e=>{
     e.preventDefault();
     const f=new FormData(e.target);
@@ -786,6 +836,12 @@ document.addEventListener("click",async e=>{
         const [label,cls]=map[r.relationship];t.textContent=label;t.className="btn "+cls;
         if(r.relationship==="pending")toast("Follow request sent");}
       catch(err){toast(err.message,"err");}break;}
+    case"follow-accept":{
+      try{await api(`/api/follow-requests/${t.dataset.user}/accept`,{method:"POST"});
+        t.closest(".req-card")?.remove();toast("You're now connected 🎉");}catch(err){toast(err.message,"err");}break;}
+    case"follow-deny":{
+      try{await api(`/api/follow-requests/${t.dataset.user}/deny`,{method:"POST"});
+        t.closest(".req-card")?.remove();toast("Request removed");}catch(err){toast(err.message,"err");}break;}
     case"block":{
       try{const r=await api("/api/block/"+t.dataset.user,{method:"POST"});toast(r.blocked?"Blocked":"Unblocked");renderProfile(t.dataset.user);}catch(err){toast(err.message,"err");}break;}
     case"user-menu":openMenu(t,[
@@ -871,11 +927,18 @@ function startRealtime(){
   if(state.rt||SUPABASE_URL.includes("YOUR_PROJECT"))return;
   state.rt=SB.channel("spill-live")
     .on("postgres_changes",{event:"INSERT",schema:"public",table:"notifications",
-        filter:"recipient_id=eq."+state.me.id},()=>updateBadges())
-    .on("postgres_changes",{event:"INSERT",schema:"public",table:"messages"},()=>{
+        filter:"recipient_id=eq."+state.me.id},async()=>{
+        updateBadges();
+        try{const {notification:n}=await api("/api/notifications/latest");
+          if(n)pushOS(n.display_name+" (@"+n.username+")",VERB[n.type]||"interacted with you");}catch(e){}
+    })
+    .on("postgres_changes",{event:"INSERT",schema:"public",table:"messages"},(p)=>{
         if(state.activeConvo)pollConvo(true);
         if(location.hash.startsWith("#/messages"))loadConvoList();
-        updateBadges();})
+        updateBadges();
+        const row=p.new||{};
+        if(row.sender_id&&row.sender_id!==state.me.id)pushOS("New message",row.body||"📷 Sent a photo");
+    })
     .subscribe();
 }
 function enterApp(){
