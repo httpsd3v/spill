@@ -1051,7 +1051,6 @@ def notifications():
     db.commit()
     return jsonify({"groups": out})
 
-
 @app.get("/api/follow-requests")
 @token_required
 def follow_requests():
@@ -1062,7 +1061,6 @@ def follow_requests():
            WHERE f.following_id=%s AND f.status='pending'
            ORDER BY f.created_at DESC LIMIT 30""", (g.uid,)).fetchall()
     return jsonify({"requests": [dict(r) for r in rows]})
-
 
 @app.post("/api/follow-requests/<username>/accept")
 @token_required
