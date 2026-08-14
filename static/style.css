@@ -172,7 +172,7 @@ textarea{resize:none}
 .c-tools button:hover{color:var(--accent)}
 
 /* ---------- panels / trends / users ---------- */
-.panel{background:var(--surface);border-radius:18px;padding:14px 0;overflow:hidden}
+.panel{background:var(--surface);border-radius:18px;padding:14px 0;overflow-x:hidden;overflow-y:scroll;}
 .panel.flat{background:transparent;border:1px solid var(--border);border-radius:14px;margin:0 16px 8px}
 .panel h3{padding:0 16px 8px;font-size:18px}
 .trend-item{display:flex;flex-direction:column;padding:10px 16px;cursor:pointer}
